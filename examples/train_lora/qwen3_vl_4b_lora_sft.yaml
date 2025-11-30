@@ -1,0 +1,73 @@
+### ============================================================
+### Qwen3-VL-4B LoRA SFT 训练配置
+### 基于 WebUI 调参，保持 384x384 像素和 4096 序列长度
+### ============================================================
+
+### ==================== 模型配置 ====================
+model_name_or_path: Qwen/Qwen3-VL-4B-Instruct
+trust_remote_code: true
+
+# 视觉处理参数 - 384x384 像素配置
+image_max_pixels: 147456      # 384x384 = 147456
+image_min_pixels: 1024        # 32x32 最小分辨率
+video_max_pixels: 65536       # 256x256 视频帧
+video_min_pixels: 256
+
+### ==================== 训练方法 ====================
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 8                  # LoRA秩
+lora_alpha: 16                # 2*lora_rank
+lora_dropout: 0               # WebUI设置为0
+lora_target: all              # 对所有线性层应用LoRA
+
+# 视觉塔冻结配置
+freeze_vision_tower: true              # 冻结视觉编码器
+freeze_multi_modal_projector: true     # 冻结多模态投影层
+
+### ==================== 数据集配置 ====================
+dataset_dir: data
+dataset: hsa_test             # 你的数据集名称
+template: qwen3_vl_nothink    # 无思考模式模板
+cutoff_len: 4096              # 最大序列长度
+max_samples: 100000           # 最大样本数
+packing: false                # 不打包样本
+enable_thinking: false        # 关闭思考模式
+
+# 速度优化参数
+preprocessing_num_workers: 16 # 预处理并行数
+overwrite_cache: false        # 复用缓存加速
+
+### ==================== 输出配置 ====================
+output_dir: saves/Qwen3-VL-4B-Instruct/lora/sft
+logging_steps: 5
+save_steps: 100
+plot_loss: true
+report_to: none
+include_num_input_tokens_seen: true
+
+### ==================== 训练参数 ====================
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 8  # 有效batch_size = 2 * 8 = 16
+learning_rate: 5.0e-5           # WebUI调参值
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_steps: 0                 # 无warmup
+optim: adamw_torch              # 优化器
+
+# 混合精度训练
+bf16: true
+
+# 梯度优化
+max_grad_norm: 1.0
+ddp_timeout: 180000000
+
+# Flash Attention
+flash_attn: auto
+
+### ==================== 评估配置（可选） ====================
+# val_size: 0.1
+# per_device_eval_batch_size: 1
+# eval_strategy: steps
+# eval_steps: 500

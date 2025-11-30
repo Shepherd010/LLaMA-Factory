@@ -187,10 +187,100 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
         features: dict[str, torch.Tensor] = super().__call__(features)
 
         if self.get_rope_func is not None:
+            # Validate and adjust image_grid_thw/video_grid_thw to match actual tokens in input_ids
+            image_grid_thw = mm_inputs.get("image_grid_thw")
+            video_grid_thw = mm_inputs.get("video_grid_thw")
+            pixel_values = mm_inputs.get("pixel_values")
+            
+            if image_grid_thw is not None or video_grid_thw is not None:
+                image_token_id = getattr(self.model.config, "image_token_id", None)
+                video_token_id = getattr(self.model.config, "video_token_id", None)
+                vision_start_token_id = getattr(self.model.config, "vision_start_token_id", None)
+                spatial_merge_size = getattr(self.model.config, "vision_config", {})
+                if hasattr(spatial_merge_size, "spatial_merge_size"):
+                    spatial_merge_size = spatial_merge_size.spatial_merge_size
+                else:
+                    spatial_merge_size = 2  # default value for qwen vl models
+                
+                if vision_start_token_id is not None:
+                    # For batched inputs, we need to check the first sample (batch processing)
+                    # Count actual image/video tokens in the first sample
+                    input_ids_0 = features["input_ids"][0]
+                    attention_mask_0 = features["attention_mask"][0]
+                    # Only count tokens where attention_mask is 1
+                    valid_input_ids = input_ids_0[attention_mask_0 >= 1]
+                    
+                    if image_token_id is not None:
+                        actual_image_tokens = (valid_input_ids == image_token_id).sum().item()
+                    else:
+                        actual_image_tokens = 0
+                    
+                    if video_token_id is not None:
+                        actual_video_tokens = (valid_input_ids == video_token_id).sum().item()
+                    else:
+                        actual_video_tokens = 0
+                    
+                    # Calculate expected tokens from grid_thw and truncate if needed
+                    # pixel_values shape: (total_patches, C, H, W) where total_patches = sum(t * h * w for each image)
+                    # But after spatial merge, tokens = patches // spatial_merge_size²
+                    if image_grid_thw is not None and len(image_grid_thw) > 0:
+                        expected_image_tokens = 0
+                        valid_image_grids = []
+                        total_patches_to_keep = 0
+                        for grid in image_grid_thw:
+                            t, h, w = grid[0].item(), grid[1].item(), grid[2].item()
+                            patches_for_this_image = t * h * w  # raw patches in pixel_values
+                            tokens_for_this_image = patches_for_this_image // (spatial_merge_size ** 2)
+                            if expected_image_tokens + tokens_for_this_image <= actual_image_tokens:
+                                expected_image_tokens += tokens_for_this_image
+                                total_patches_to_keep += patches_for_this_image
+                                valid_image_grids.append(grid)
+                            else:
+                                break  # Stop adding images if we exceed actual token count
+                        
+                        if len(valid_image_grids) > 0 and len(valid_image_grids) < len(image_grid_thw):
+                            # Need to truncate both image_grid_thw and pixel_values
+                            image_grid_thw = torch.stack(valid_image_grids)
+                            if pixel_values is not None and total_patches_to_keep < pixel_values.shape[0]:
+                                mm_inputs["pixel_values"] = pixel_values[:total_patches_to_keep]
+                                pixel_values = mm_inputs["pixel_values"]
+                        elif len(valid_image_grids) == 0:
+                            image_grid_thw = None
+                            # Remove pixel_values if no valid images
+                            if "pixel_values" in mm_inputs:
+                                del mm_inputs["pixel_values"]
+                    
+                    if video_grid_thw is not None and len(video_grid_thw) > 0:
+                        expected_video_tokens = 0
+                        valid_video_grids = []
+                        for grid in video_grid_thw:
+                            t, h, w = grid[0].item(), grid[1].item(), grid[2].item()
+                            tokens_for_this_video = (t * h * w) // (spatial_merge_size ** 2)
+                            if expected_video_tokens + tokens_for_this_video <= actual_video_tokens:
+                                expected_video_tokens += tokens_for_this_video
+                                valid_video_grids.append(grid)
+                            else:
+                                break
+                        if len(valid_video_grids) > 0:
+                            video_grid_thw = torch.stack(valid_video_grids)
+                        else:
+                            video_grid_thw = None
+                    
+                    # Update mm_inputs with truncated grid_thw values
+                    if image_grid_thw is not None:
+                        mm_inputs["image_grid_thw"] = image_grid_thw
+                    elif "image_grid_thw" in mm_inputs:
+                        del mm_inputs["image_grid_thw"]
+                    
+                    if video_grid_thw is not None:
+                        mm_inputs["video_grid_thw"] = video_grid_thw
+                    elif "video_grid_thw" in mm_inputs:
+                        del mm_inputs["video_grid_thw"]
+            
             rope_index_kwargs = {
                 "input_ids": features["input_ids"],
-                "image_grid_thw": mm_inputs.get("image_grid_thw"),
-                "video_grid_thw": mm_inputs.get("video_grid_thw"),
+                "image_grid_thw": image_grid_thw,
+                "video_grid_thw": video_grid_thw,
                 "attention_mask": (features["attention_mask"] >= 1).float(),
             }
             if "second_per_grid_ts" in mm_inputs:  # for qwen2vl
@@ -210,7 +300,16 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                     dim=-1
                 ).unsqueeze(-1)
             else:  # for qwen vl
-                features["position_ids"], features["rope_deltas"] = self.get_rope_func(**rope_index_kwargs)
+                try:
+                    features["position_ids"], features["rope_deltas"] = self.get_rope_func(**rope_index_kwargs)
+                except RuntimeError as e:
+                    if "shape mismatch" in str(e):
+                        # Fallback: if grid_thw mismatch persists, set them to None to use default position ids
+                        rope_index_kwargs["image_grid_thw"] = None
+                        rope_index_kwargs["video_grid_thw"] = None
+                        features["position_ids"], features["rope_deltas"] = self.get_rope_func(**rope_index_kwargs)
+                    else:
+                        raise
 
         if (
             self.model is not None
