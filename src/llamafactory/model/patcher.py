@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from types import MethodType
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +25,7 @@ from transformers.modeling_utils import is_fsdp_enabled
 from ..extras import logging
 from ..extras.misc import infer_optim_dtype
 from ..extras.packages import is_transformers_version_greater_than
+from .hsa_patch import apply_hsa_patch
 from .model_utils.attention import configure_attn_implementation, print_attn_implementation
 from .model_utils.checkpointing import prepare_model_for_training
 from .model_utils.embedding import resize_embedding_layer
@@ -210,6 +212,10 @@ def patch_model(
         model.add_model_tags(["llama-factory"])
     except Exception:
         logger.warning_rank0("Cannot properly tag the model.")
+
+    if os.environ.get("USE_HSA", "false").lower() == "true":
+        print("[HSA] Enabling Hierarchical Semantic Attention...")
+        apply_hsa_patch(model)
 
 
 def patch_valuehead_model(model: "AutoModelForCausalLMWithValueHead") -> None:

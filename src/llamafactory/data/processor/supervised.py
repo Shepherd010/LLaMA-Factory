@@ -39,17 +39,18 @@ class SupervisedDatasetProcessor(DatasetProcessor):
         images: list["ImageInput"],
         videos: list["VideoInput"],
         audios: list["AudioInput"],
-    ) -> tuple[list[int], list[int]]:
+    ) -> tuple[list[int], list[int], list[int]]:
         messages = self.template.mm_plugin.process_messages(prompt + response, images, videos, audios, self.processor)
         input_ids, labels = self.template.mm_plugin.process_token_ids(
             [], [], images, videos, audios, self.tokenizer, self.processor
         )
-        encoded_pairs = self.template.encode_multiturn(self.tokenizer, messages, system, tools)
+        encoded_quads = self.template.encode_multiturn_with_semantic(self.tokenizer, messages, system, tools)
         total_length = len(input_ids) + (1 if self.template.efficient_eos else 0)
         if self.data_args.mask_history:
-            encoded_pairs = encoded_pairs[::-1]  # high priority for last turns
+            encoded_quads = encoded_quads[::-1]  # high priority for last turns
 
-        for turn_idx, (source_ids, target_ids) in enumerate(encoded_pairs):
+        semantic_ids = []
+        for turn_idx, (source_ids, target_ids, source_sem_ids, target_sem_ids) in enumerate(encoded_quads):
             if total_length >= self.data_args.cutoff_len:
                 break
 
@@ -58,6 +59,8 @@ class SupervisedDatasetProcessor(DatasetProcessor):
             )
             source_ids = source_ids[:source_len]
             target_ids = target_ids[:target_len]
+            source_sem_ids = source_sem_ids[:source_len]
+            target_sem_ids = target_sem_ids[:target_len]
             total_length += source_len + target_len
 
             if self.data_args.train_on_prompt:
@@ -75,15 +78,18 @@ class SupervisedDatasetProcessor(DatasetProcessor):
             if self.data_args.mask_history:  # reversed sequences
                 input_ids = source_ids + target_ids + input_ids
                 labels = source_label + target_label + labels
+                semantic_ids = source_sem_ids + target_sem_ids + semantic_ids
             else:
                 input_ids += source_ids + target_ids
                 labels += source_label + target_label
+                semantic_ids += source_sem_ids + target_sem_ids
 
         if self.template.efficient_eos:
             input_ids += [self.tokenizer.eos_token_id]
             labels += [self.tokenizer.eos_token_id]
+            semantic_ids += [2]
 
-        return input_ids, labels
+        return input_ids, labels, semantic_ids
 
     def preprocess_dataset(self, examples: dict[str, list[Any]]) -> dict[str, list[Any]]:
         # build inputs with format `<bos> X Y <eos>` and labels with format `<ignore> ... <ignore> Y <eos>`
@@ -96,7 +102,7 @@ class SupervisedDatasetProcessor(DatasetProcessor):
                 )
                 continue
 
-            input_ids, labels = self._encode_data_example(
+            input_ids, labels, semantic_ids = self._encode_data_example(
                 prompt=examples["_prompt"][i],
                 response=examples["_response"][i],
                 system=examples["_system"][i],
@@ -111,6 +117,8 @@ class SupervisedDatasetProcessor(DatasetProcessor):
             model_inputs["images"].append(examples["_images"][i])
             model_inputs["videos"].append(examples["_videos"][i])
             model_inputs["audios"].append(examples["_audios"][i])
+            if semantic_ids:
+                model_inputs["semantic_ids"].append(semantic_ids)
 
         return model_inputs
 

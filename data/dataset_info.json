@@ -1,4 +1,20 @@
 {
+  "hsa_test": {
+    "file_name": "hsa_test.json",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages",
+      "images": "images"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant",
+      "system_tag": "system",
+      "semantic_tag": "semantic_type"
+    }
+  },
   "identity": {
     "file_name": "identity.json"
   },

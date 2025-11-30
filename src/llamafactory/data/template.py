@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import re
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Union
@@ -126,20 +127,24 @@ class Template:
 
         return token_ids
 
-    def _encode(
+    def _encode_with_semantic(
         self,
         tokenizer: "PreTrainedTokenizer",
         messages: list[dict[str, str]],
         system: Optional[str],
         tools: Optional[str],
-    ) -> list[list[int]]:
-        r"""Encode formatted inputs to pairs of token ids.
-
-        Turn 0: prefix + system + query        resp
-        Turn t: query                          resp.
-        """
+    ) -> list[tuple[list[int], list[int]]]:
+        r"""Encode formatted inputs to pairs of token ids and semantic ids."""
         system = system or self.default_system
         encoded_messages = []
+        
+        use_hsa = os.environ.get("USE_HSA", "false").lower() == "true"
+        SEMANTIC_MAP = {
+            "GLOBAL_CONDITION": 0,
+            "KEY_EVENT": 1,
+            "PROCESS_NOISE": 2
+        }
+
         for i, message in enumerate(messages):
             elements = []
 
@@ -160,9 +165,49 @@ class Template:
             else:
                 raise NotImplementedError("Unexpected role: {}".format(message["role"]))
 
-            encoded_messages.append(self._convert_elements_to_ids(tokenizer, elements))
+            token_ids = self._convert_elements_to_ids(tokenizer, elements)
+            
+            semantic_ids = []
+            if use_hsa:
+                sem_type = SEMANTIC_MAP.get(message.get("semantic_type"), 2)
+                semantic_ids = [sem_type] * len(token_ids)
+            
+            encoded_messages.append((token_ids, semantic_ids))
 
         return encoded_messages
+
+    def encode_multiturn_with_semantic(
+        self,
+        tokenizer: "PreTrainedTokenizer",
+        messages: list[dict[str, str]],
+        system: Optional[str] = None,
+        tools: Optional[str] = None,
+    ) -> list[tuple[list[int], list[int], list[int], list[int]]]:
+        encoded_messages = self._encode_with_semantic(tokenizer, messages, system, tools)
+        return [
+            (
+                encoded_messages[i][0], 
+                encoded_messages[i + 1][0],
+                encoded_messages[i][1],
+                encoded_messages[i + 1][1]
+            ) 
+            for i in range(0, len(encoded_messages), 2)
+        ]
+
+    def _encode(
+        self,
+        tokenizer: "PreTrainedTokenizer",
+        messages: list[dict[str, str]],
+        system: Optional[str],
+        tools: Optional[str],
+    ) -> list[list[int]]:
+        r"""Encode formatted inputs to pairs of token ids.
+
+        Turn 0: prefix + system + query        resp
+        Turn t: query                          resp.
+        """
+        encoded_with_sem = self._encode_with_semantic(tokenizer, messages, system, tools)
+        return [ids for ids, sem in encoded_with_sem]
 
     @staticmethod
     def _add_or_replace_eos_token(tokenizer: "PreTrainedTokenizer", eos_token: str) -> None:

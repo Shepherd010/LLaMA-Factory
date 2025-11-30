@@ -106,6 +106,10 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
             self.get_rope_func = None
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, "torch.Tensor"]:
+        semantic_ids = None
+        if "semantic_ids" in features[0]:
+            semantic_ids = [f.pop("semantic_ids") for f in features]
+
         batch_images, batch_videos, batch_audios = [], [], []
         batch_imglens, batch_vidlens, batch_audlens, batch_input_ids = [], [], [], []
         for feature in features:
@@ -232,6 +236,20 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
             mm_inputs["cross_attention_mask"] = F.pad(cross_attention_mask, (0, 0, 0, 0, 0, seq_len - orig_len))
 
         features.update(mm_inputs)
+
+        if semantic_ids is not None:
+            sem_ids = [torch.tensor(s, dtype=torch.long) for s in semantic_ids]
+            batch_input_ids = features["input_ids"]
+            batch_size, seq_len = batch_input_ids.shape
+            padded_sem_ids = []
+            for s in sem_ids:
+                pad_len = seq_len - len(s)
+                if self.tokenizer.padding_side == "left":
+                    padded_s = torch.cat([torch.full((pad_len,), 2, dtype=torch.long), s])
+                else:
+                    padded_s = torch.cat([s, torch.full((pad_len,), 2, dtype=torch.long)])
+                padded_sem_ids.append(padded_s)
+            features["semantic_ids"] = torch.stack(padded_sem_ids)
 
         if "image_bound" in features:  # for minicpmv inputs
             bsz, seq_length = features["input_ids"].shape
