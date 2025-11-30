@@ -246,6 +246,12 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                     # -> Need to truncate input_ids by replacing excess image tokens with pad
                     if actual_image_tokens > max_supported_image_tokens and image_token_id is not None:
                         excess_tokens = actual_image_tokens - max_supported_image_tokens
+                        # Clone tensors to avoid in-place modification issues
+                        batch_input_ids = batch_input_ids.clone()
+                        batch_attention_mask = batch_attention_mask.clone()
+                        if batch_labels is not None:
+                            batch_labels = batch_labels.clone()
+                        
                         # Replace excess image tokens from the END with pad_token_id
                         pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
                         for batch_idx in range(batch_input_ids.shape[0]):
