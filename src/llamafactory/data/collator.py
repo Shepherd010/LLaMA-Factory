@@ -203,9 +203,12 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                     spatial_merge_size = 2  # default value for qwen vl models
                 
                 if vision_start_token_id is not None:
-                    batch_input_ids = features["input_ids"]
-                    batch_attention_mask = features["attention_mask"]
+                    # Clone tensors upfront to avoid in-place modification issues with pin_memory
+                    batch_input_ids = features["input_ids"].clone()
+                    batch_attention_mask = features["attention_mask"].clone()
                     batch_labels = features.get("labels")
+                    if batch_labels is not None:
+                        batch_labels = batch_labels.clone()
                     valid_mask = batch_attention_mask >= 1
                     
                     # Calculate how many image tokens the grid_thw can support
@@ -246,12 +249,6 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                     # -> Need to truncate input_ids by replacing excess image tokens with pad
                     if actual_image_tokens > max_supported_image_tokens and image_token_id is not None:
                         excess_tokens = actual_image_tokens - max_supported_image_tokens
-                        # Clone tensors to avoid in-place modification issues
-                        batch_input_ids = batch_input_ids.clone()
-                        batch_attention_mask = batch_attention_mask.clone()
-                        if batch_labels is not None:
-                            batch_labels = batch_labels.clone()
-                        
                         # Replace excess image tokens from the END with pad_token_id
                         pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
                         for batch_idx in range(batch_input_ids.shape[0]):
@@ -275,11 +272,6 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                             
                             if excess_tokens <= 0:
                                 break
-                        
-                        features["input_ids"] = batch_input_ids
-                        features["attention_mask"] = batch_attention_mask
-                        if batch_labels is not None:
-                            features["labels"] = batch_labels
                     
                     # Case 2: input_ids has FEWER image tokens than grid_thw
                     # -> Need to truncate grid_thw and pixel_values
@@ -334,13 +326,17 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
                         mm_inputs["video_grid_thw"] = video_grid_thw
                     elif "video_grid_thw" in mm_inputs:
                         del mm_inputs["video_grid_thw"]
-                    elif "video_grid_thw" in mm_inputs:
-                        del mm_inputs["video_grid_thw"]
+                    
+                    # Write cloned tensors back to features
+                    features["input_ids"] = batch_input_ids
+                    features["attention_mask"] = batch_attention_mask
+                    if batch_labels is not None:
+                        features["labels"] = batch_labels
             
             rope_index_kwargs = {
                 "input_ids": features["input_ids"],
-                "image_grid_thw": image_grid_thw,
-                "video_grid_thw": video_grid_thw,
+                "image_grid_thw": mm_inputs.get("image_grid_thw"),
+                "video_grid_thw": mm_inputs.get("video_grid_thw"),
                 "attention_mask": (features["attention_mask"] >= 1).float(),
             }
             if "second_per_grid_ts" in mm_inputs:  # for qwen2vl
